@@ -81,7 +81,7 @@ mural_s2s/
 ├── data/
 │   ├── genome.py      Genome(fasta_path) — get_encoding_from_coords()
 │   ├── targets.py     GenomicSignalFeatures(bw_paths, names) — get_feature_data()
-│   ├── sampler.py     IntervalsSampler — chr-partitioned sampling
+│   ├── sampler.py     IntervalsSampler — chr-partitioned sampling, shuffle param
 │   └── dataloader.py  Seq2SeqDataset, build_dataloader(), collate
 ├── training/
 │   ├── trainer.py     Trainer — Adam+StepLR, train_step(), valid_step(), _mask_no_mut()
@@ -92,6 +92,9 @@ mural_s2s/
 │   └── helpers.py     EarlyStopping, save_model(), load_model(), reverse_complement_batch()
 ├── train.py           CLI: --fasta --intervals --target-dir --mask-bw --output-dir ...
 └── predict.py         CLI: --model --output --mode {train,validate,test}
+                        Streaming write to temp file (no pivot_table OOM),
+                        shuffle=False for genomic-order output,
+                        progress --progress-every N batches.
 ```
 
 ## Git
@@ -112,6 +115,22 @@ python mural_s2s/train.py \
     --output-dir ./output \
     --batch-size 32 --epochs 20
 ```
+
+## Prediction command (example)
+
+```bash
+conda activate mural
+python mural_s2s/predict.py \
+    --fasta /public5/home/songhui/data/hg19/hg19_ucsc_ordered.fa \
+    --intervals /public5/home/songhui/mural_snv/s2m/segments/segments.win10k.step10k.valid_sites_8k.bed \
+    --target-dir /public5_data/home/songhui/s2m \
+    --mask-bw /public5_data/home/songhui/s2m/genome.mask_coverage_15_45.bw \
+    --model ./output/checkpoint_19/model \
+    --output predictions_chr2.tsv.gz \
+    --mode test
+```
+
+Output: gzipped TSV in genomic-position order, columns: `chrom, pos, mut_rate_A, mut_rate_C, mut_rate_G, mut_rate_T`.
 
 ## Data sources
 

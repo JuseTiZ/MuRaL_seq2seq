@@ -97,6 +97,7 @@ def main():
         validation_holdout=config.val_chroms,
         test_holdout=config.test_chroms,
         seed=config.seed,
+        shuffle=False,
     )
 
     sampler.mode = args.mode

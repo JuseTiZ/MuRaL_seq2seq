@@ -23,11 +23,13 @@ class IntervalsSampler:
         validation_holdout=None,
         test_holdout=None,
         seed=436,
+        shuffle=True,
     ):
         self.reference_sequence = reference_sequence
         self.target = target
         self.sequence_length = sequence_length
         self.seed = seed
+        self.shuffle = shuffle
 
         np.random.seed(self.seed)
         random.seed(self.seed + 1)
@@ -72,9 +74,12 @@ class IntervalsSampler:
         if mode is None:
             mode = self._mode
         indices = self._sample_from_mode[mode].indices
-        self._randcache[mode]["cache_indices"] = np.random.choice(
-            indices, size=len(indices), replace=False
-        )
+        if self.shuffle:
+            self._randcache[mode]["cache_indices"] = np.random.choice(
+                indices, size=len(indices), replace=False
+            )
+        else:
+            self._randcache[mode]["cache_indices"] = np.array(indices, dtype=np.int64)
         self._randcache[mode]["sample_next"] = 0
 
     @property
