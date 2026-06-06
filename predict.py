@@ -14,16 +14,17 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import sys
-
-# Allow running this script directly from anywhere without installing mural_s2s
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import sys
+import time
 
 import numpy as np
 import pandas as pd
 import torch
+
+# Allow running this script directly from anywhere without installing mural_s2s
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mural_s2s.config import TrainingConfig
 from mural_s2s.data.genome import Genome
@@ -33,31 +34,33 @@ from mural_s2s.data.dataloader import build_dataloader
 from mural_s2s.model import PuffinD
 
 
+def _format_time(seconds):
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(seconds, 60)
+    return f"{int(m)}m{s:.0f}s"
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Predict mutation rates with seq2seq model")
 
-    # Data
     p.add_argument("--fasta", required=True, help="Reference FASTA")
     p.add_argument("--intervals", required=True, help="BED intervals file")
     p.add_argument("--target-dir", required=True, help="Directory with BigWig files")
     p.add_argument("--mask-bw", required=True, help="Coverage mask BigWig")
-
-    # Model
     p.add_argument("--model", required=True, help="Model checkpoint path")
 
-    # Config (must match training)
     p.add_argument("--val-chroms", nargs="+", default=["chr1"])
     p.add_argument("--test-chroms", nargs="+", default=["chr2"])
     p.add_argument("--sequence-length", type=int, default=10000)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--seed", type=int, default=436)
+    p.add_argument("--progress-every", type=int, default=100,
+                   help="Print progress every N batches")
 
-    # Output
     p.add_argument("--output", required=True, help="Output TSV path (.gz supported)")
     p.add_argument("--mode", default="test", choices=["train", "validate", "test"],
                    help="Which data split to predict on")
-
-    # GPU
     p.add_argument("--device", default="cuda:0")
 
     return p.parse_args()
@@ -67,9 +70,7 @@ def main():
     args = parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
 
-    # Build config with minimal settings
     config = TrainingConfig(
         fasta=args.fasta,
         intervals=args.intervals,
@@ -98,6 +99,10 @@ def main():
         seed=config.seed,
     )
 
+    sampler.mode = args.mode
+    n_intervals = sampler.n_samples
+    n_batches = math.ceil(n_intervals / config.batch_size)
+
     # --- Model ---
     n_output_channels = len(config.target_features)
     model = PuffinD(n_output_channels=n_output_channels)
@@ -105,49 +110,77 @@ def main():
     model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
-    print(f"Model loaded from {args.model}")
+
+    # --- Config summary ---
+    use_gzip = args.output.endswith('.gz')
+    print("=" * 70)
+    print("Prediction Configuration")
+    print("=" * 70)
+    print(f"  Model:      {args.model}")
+    print(f"  Device:     {device}")
+    print(f"  FASTA:      {config.fasta}")
+    print(f"  Intervals:  {config.intervals}")
+    print(f"  Mode:        {args.mode}")
+    print(f"  Seq length:  {config.sequence_length}")
+    print(f"  Batch size:  {config.batch_size}")
+    print(f"  Intervals:   {n_intervals:,}")
+    print(f"  Batches:     {n_batches:,}")
+    print(f"  Output:      {args.output}")
+    print("=" * 70)
 
     # --- Predict ---
-    sampler.mode = args.mode
     loader = build_dataloader(sampler, config.batch_size, num_workers=0, seed=config.seed)
+    progress_n = args.progress_every
 
     bases = ['A', 'C', 'G', 'T']
-    all_rows = []
+    col_names = ['chrom', 'pos'] + [f'mut_rate_{b}' for b in bases]
+    header_line = '\t'.join(col_names) + '\n'
 
-    with torch.no_grad():
-        for sequence, target, metadatas in loader:
-            sequence = sequence.to(device)
-            preds = model(sequence).cpu().numpy()  # (B, 4, L)
+    # Write uncompressed temp file, compress at end if needed
+    tmp_output = args.output + ".tmp"
 
-            for i, meta in enumerate(metadatas):
-                chrom = meta.chroms
-                start = int(meta.bin_starts)
-                positions = np.arange(start, start + preds.shape[2])
+    t0 = time.time()
+    n_positions = 0
 
-                for j, base in enumerate(bases):
-                    rows = pd.DataFrame({
-                        'chrom': chrom,
-                        'pos': positions,
-                        'base': base,
-                        'mut_rate': preds[i, j, :],
-                    })
-                    all_rows.append(rows)
+    with open(tmp_output, 'w') as f:
+        f.write(header_line)
 
-    df = pd.concat(all_rows, axis=0, ignore_index=True)
+        with torch.no_grad():
+            for batch_idx, (sequence, target, metadatas) in enumerate(loader):
+                sequence = sequence.to(device)
+                preds = model(sequence).cpu().numpy()  # (B, 4, L)
 
-    # Pivot: rows = positions, columns = mut_rate per base
-    df_wide = df.pivot_table(
-        index=['chrom', 'pos'], columns='base', values='mut_rate'
-    ).reset_index()
-    df_wide.columns.name = None
-    df_wide.rename(columns={
-        'A': 'mut_rate_A', 'C': 'mut_rate_C',
-        'G': 'mut_rate_G', 'T': 'mut_rate_T',
-    }, inplace=True)
+                lines = []
+                for i, meta in enumerate(metadatas):
+                    chrom = meta.chroms
+                    start = int(meta.bin_starts)
+                    end = start + preds.shape[2]
+                    for pos in range(start, end):
+                        p = pos - start
+                        vals = '\t'.join(f'{preds[i, j, p]:.8f}' for j in range(4))
+                        lines.append(f'{chrom}\t{pos}\t{vals}\n')
 
-    df_wide.to_csv(args.output, index=False, sep='\t',
-                   compression='gzip' if args.output.endswith('.gz') else None)
-    print(f"Predictions saved to {args.output}")
+                f.write(''.join(lines))
+                n_positions += len(lines)
+
+                b = batch_idx + 1
+                if b % progress_n == 0:
+                    elapsed = time.time() - t0
+                    pct = 100.0 * b / n_batches
+                    print(f"  [predict] {b:>5d}/{n_batches} ({pct:4.0f}%) | "
+                          f"{_format_time(elapsed)}")
+
+    # Compress if requested, then rename
+    if use_gzip:
+        os.system(f"gzip -f {tmp_output}")
+        tmp_output = tmp_output + ".gz"
+
+    os.rename(tmp_output, args.output)
+
+    total_time = time.time() - t0
+    print(f"\nPrediction finished in {_format_time(total_time)}")
+    print(f"Positions predicted: {n_positions:,}")
+    print(f"Output saved to {args.output}")
 
 
 if __name__ == "__main__":
