@@ -231,6 +231,8 @@ def main():
     trainer = Trainer(model, config, device, observers=observers)
 
     early_stopping = EarlyStopping(patience=config.patience)
+    best_val_loss = float('inf')
+    best_epoch = -1
     progress_n = config.progress_every_n_batches
 
     # --- Training loop ---
@@ -276,6 +278,7 @@ def main():
         os.makedirs(checkpoint_dir, exist_ok=True)
         save_path = os.path.join(checkpoint_dir, "model")
         save_model(model, config, save_path)
+        print(f"Checkpoint saved to {save_path}")
 
         # --- Validate ---
         sampler.mode = "validate"
@@ -324,12 +327,23 @@ def main():
         base_labels = ['A', 'C', 'G', 'T']
         ch_names = config.target_features
 
+        # --- Track best ---
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_epoch = epoch
+            improved = True
+        else:
+            improved = False
+
         print(f"\n--- Epoch {epoch} Summary ---")
         print(f"Train loss: {train_loss:.6f} | "
-              f"Val loss: {val_loss:.6f} | "
+              f"Val loss: {val_loss:.8f} | "
               f"LR: {current_lr:.2e} | "
               f"Train time: {_format_time(train_time)} | "
               f"Val time: {_format_time(val_time)}")
+        if improved:
+            print(f"  *** Best model updated: epoch {best_epoch}, "
+                  f"val_loss = {best_val_loss:.8f} ***")
         print("Per-nucleotide-grouped Pearson r:")
         header = "      " + "  ".join(f"{n:>8s}" for n in ch_names)
         print(header)
@@ -339,7 +353,7 @@ def main():
             print(f"  {nuc_label}  {vals}")
 
         # --- Write log ---
-        log_cols = [str(epoch), f"{train_loss:.6f}", f"{val_loss:.6f}",
+        log_cols = [str(epoch), f"{train_loss:.6f}", f"{val_loss:.8f}",
                     f"{current_lr:.6e}", f"{train_time:.1f}"]
         for nuc_idx in range(4):
             for ch in range(len(ch_names)):
@@ -351,12 +365,14 @@ def main():
         # --- Early stopping ---
         if early_stopping(val_loss, model):
             print(f"\nEarly stopping triggered (patience={config.patience}). "
-                  f"Best val_loss={early_stopping.best_loss:.6f}")
+                  f"Best val_loss={early_stopping.best_loss:.8f}")
             break
 
         print(f"Checkpoint saved to {save_path}")
 
-    print(f"\nTraining finished. Outputs saved to {config.output_dir}")
+    print(f"\nTraining finished.")
+    print(f"Best model: checkpoint_{best_epoch}/ (val_loss = {best_val_loss:.8f})")
+    print(f"Outputs saved to {config.output_dir}")
 
 
 if __name__ == "__main__":

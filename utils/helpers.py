@@ -12,6 +12,7 @@ class EarlyStopping:
         self.patience = patience
         self.counter = 0
         self.best_loss = float('inf')
+        self.best_epoch = -1
         self.best_state = None
         self.early_stop = False
 
