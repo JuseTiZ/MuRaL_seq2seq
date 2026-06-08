@@ -26,10 +26,29 @@ class PuffinD(nn.Module):
 
     Input:  (B, 4, L) — one-hot DNA sequence
     Output: (B, n_output_channels, L) — per-position mutation probabilities
+
+    Args:
+        n_output_channels: number of output channels (default 4: mut_to_A/C/G/T)
+        use_reverse: if True, add reverse-complement symmetric conv on input
+                     and AT/CG embedding concatenated to final layer.
     """
 
-    def __init__(self, n_output_channels=4):
+    def __init__(self, n_output_channels=4, use_reverse=True):
         super().__init__()
+        self.use_reverse = use_reverse
+
+        embedding_dim = 4 if use_reverse else 0
+        if use_reverse:
+            self.conv = nn.Sequential(
+                nn.Conv1d(4, 4, kernel_size=7, padding=3),
+                nn.BatchNorm1d(4),
+            )
+            self.register_buffer(
+                'collapse_map', torch.tensor([0, 0, 1, 1], dtype=torch.float)
+            )
+            self.ref_embedding = nn.Embedding(
+                num_embeddings=2, embedding_dim=embedding_dim
+            )
 
         # --- Encoder path 1 ---
         self.uplblocks = nn.ModuleList([
@@ -174,17 +193,24 @@ class PuffinD(nn.Module):
             nn.Sequential(ConvBlock(64, 64), ConvBlock(64, 64)),
         ])
 
+        final_dim = 64 + embedding_dim
         self.final = nn.Sequential(
-            nn.Conv1d(64, 64, kernel_size=1),
-            nn.BatchNorm1d(64),
+            nn.Conv1d(final_dim, final_dim, kernel_size=1),
+            nn.BatchNorm1d(final_dim),
             nn.ReLU(inplace=True),
-            nn.Conv1d(64, n_output_channels, kernel_size=1),
+            nn.Conv1d(final_dim, n_output_channels, kernel_size=1),
             nn.Softplus(),
         )
 
     def forward(self, x):
+        if self.use_reverse:
+            ref_class_idx = torch.einsum('bcl,c->bl', x, self.collapse_map).long()
+            ref_emb = self.ref_embedding(ref_class_idx).permute(0, 2, 1)
+            out = torch.add(self.conv(x), self.conv(x.flip([1, 2])).flip([2]))
+        else:
+            out = x
+
         # Encoder 1
-        out = x
         encodings = []
         for lconv, conv in zip(self.uplblocks, self.upblocks):
             lout = lconv(out)
@@ -212,6 +238,9 @@ class PuffinD(nn.Module):
             lout = lconv(out)
             out = conv(lout)
             out = enc + out
+
+        if self.use_reverse:
+            out = torch.cat([out, ref_emb], dim=1)
 
         return self.final(out)
 

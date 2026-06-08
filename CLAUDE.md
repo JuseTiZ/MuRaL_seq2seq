@@ -12,10 +12,12 @@ conda activate mural
 
 ## Architecture
 
-**Model**: `PuffinD` U-Net (~13M params), no reverse-complement module.
+**Model**: `PuffinD(n_output_channels=4, use_reverse=True)` (~13M params).
 - Input: `(B, 4, 10000)` one-hot DNA
 - Output: `(B, 4, 10000)` via Softplus
 - Two encoder-decoder passes with skip connections.
+- `use_reverse=True` (default): reverse-complement symmetric conv on input (`conv(x) + conv(flip(x))`) + AT/CG embedding (4-dim) concatenated to final layer (`final_dim = 64 + 4 = 68`).
+- `use_reverse=False`: no reverse-complement module, no AT/CG embedding (`final_dim = 64`). Compatible with old checkpoints.
 
 **Loss**: `Poisson_PseudoKL = kl_term + total_weight * poisson_term`
 - KL term: `y_true * log(y_true/y_pred) + y_pred - y_true`, element-wise, then mean over L
