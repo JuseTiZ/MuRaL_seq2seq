@@ -43,10 +43,11 @@ class Trainer:
 
         preds = self.model(sequence)
 
-        # Mask out no-mutation positions: e.g. at an A site,
+        # Mask out no-mutation positions in target: e.g. at an A site,
         # mut_to_A label is a ref-base indicator (1.0), not a real rate.
-        # Zero it from both prediction and target.
-        preds, target_values = _mask_no_mut(sequence, preds, target_values)
+        # Only zero the target (not preds) so the model learns to
+        # suppress predictions at matched-base positions via the loss.
+        target_values = _mask_no_mut(sequence, target_values)
 
         preds = preds * mask
         target_values = target_values * mask
@@ -97,7 +98,7 @@ class Trainer:
 
             preds = self.model(sequence)
 
-            preds, target_values = _mask_no_mut(sequence, preds, target_values)
+            target_values = _mask_no_mut(sequence, target_values)
 
             preds_masked = preds * mask
             target_masked = target_values * mask
@@ -124,27 +125,26 @@ class Trainer:
         return results
 
 
-def _mask_no_mut(sequence, preds, targets):
+def _mask_no_mut(sequence, targets):
     """
-    Zero out predictions and targets at positions where the reference base
-    matches the mutation target channel (A→A, C→C, G→G, T→T are not mutations).
+    Zero out target labels at positions where the reference base matches the
+    mutation target channel (A→A, C→C, G→G, T→T are not real mutations).
 
-    The BigWig labels store 1.0 as a ref-base indicator at these positions,
-    so without this masking, the model tries to predict 1.0 there.
+    The BigWig labels store 1.0 as a ref-base indicator at these positions.
+    By only masking targets (not predictions), the model is penalized via the
+    loss for outputting non-zero values at matched-base positions, which forces
+    it to learn to suppress predictions there.
 
     Args:
         sequence: (B, 4, L) one-hot DNA
-        preds:    (B, C_out, L) model predictions
         targets:  (B, C_out, L) label values
 
     Returns:
-        (preds, targets) with no-mutation positions zeroed.
+        targets with no-mutation positions zeroed.
     """
-    # Build keep_mask: 0 at matched-base positions (A→A etc.), 1 elsewhere.
-    # Use multiplication instead of inplace assignment to preserve autograd graph.
-    B, C, L = preds.shape
-    keep_mask = torch.ones(B, C, L, device=preds.device, dtype=preds.dtype)
+    B, C, L = targets.shape
+    keep_mask = torch.ones(B, C, L, device=targets.device, dtype=targets.dtype)
     for ch in range(C):
         base_idx = ch % 4
-        keep_mask[:, ch, :] = (sequence[:, base_idx, :] != 1).float().to(preds.dtype)
-    return preds * keep_mask, targets * keep_mask
+        keep_mask[:, ch, :] = (sequence[:, base_idx, :] != 1).float().to(targets.dtype)
+    return targets * keep_mask

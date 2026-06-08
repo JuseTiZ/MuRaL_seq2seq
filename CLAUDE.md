@@ -29,7 +29,8 @@ conda activate mural
 4. `build_dataloader` → finite PyTorch Dataset, num_workers=0
 
 **Pre-loss masking** (trainer.py `_mask_no_mut`):
-1. No-mutation mask: zeros out A→A, C→C, G→G, T→T positions in both preds & targets
+1. No-mutation mask: zeros out A→A, C→C, G→G, T→T positions in targets only (not preds);
+   this forces the model to learn to suppress predictions at matched-base positions via the loss
 2. Coverage mask: zeros out low-coverage positions (from mask_coverage_15_45.bw)
 3. Applied in both train_step and valid_step
 
