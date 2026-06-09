@@ -34,7 +34,7 @@ class TrainingConfig:
     seed: int = 436
     batch_size: int = 32
     epochs: int = 20
-    num_workers: int = 1
+    num_workers: int = 0
 
     # --- Optimizer ---
     learning_rate: float = 5e-3
@@ -60,7 +60,6 @@ class TrainingConfig:
 
     # --- Derived / runtime ---
     train_size: int = 0  # set by training script after sampler init
-    num_workers: int = 0
     progress_every_n_batches: int = 100
 
     # --- Output ---

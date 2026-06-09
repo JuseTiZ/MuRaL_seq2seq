@@ -122,6 +122,7 @@ def _print_config_summary(config, device, sampler):
     L("  Model:")
     L(f"    Architecture:   PuffinD")
     L(f"    Output channels: {n_out} ({', '.join(config.target_features)})")
+    L(f"    Use reverse module: {config.use_reverse}")
     L("")
     L("  Training:")
     L(f"    Epochs:        {config.epochs}")
@@ -153,6 +154,7 @@ def _write_log_header(log_path, config, device, train_n, val_n):
         f.write(f"# lr={config.learning_rate} min_lr={config.min_lr} lr_gamma={config.lr_gamma}\n")
         f.write(f"# weight_decay={config.weight_decay} grad_clip={config.gradient_clip_norm}\n")
         f.write(f"# total_weight={config.total_weight} seed={config.seed}\n")
+        f.write(f"# use_reverse={config.use_reverse}\n")
         f.write(f"# rev_complement_aug={config.reverse_complement_aug}\n")
         f.write(f"# device={device}\n")
         cols = ["epoch", "train_loss", "val_loss", "lr", "duration_s"]
