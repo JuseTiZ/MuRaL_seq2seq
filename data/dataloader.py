@@ -8,25 +8,33 @@ from torch.utils.data import DataLoader, Dataset
 
 class Seq2SeqDataset(Dataset):
     """
-    Finite PyTorch Dataset wrapping IntervalsSampler.
-    Each item is one genomic interval: (sequence, target, metadata).
+    Map-style PyTorch Dataset. Each item is one genomic interval.
+
+    Uses idx to directly look up the interval from the sampler's interval list.
+    Compatible with PyTorch DataLoader random/shuffle sampling.
     """
 
-    def __init__(self, sampler, reverse_complement_aug=False):
+    def __init__(self, sampler, mode, reverse_complement_aug=False):
         self.sampler = sampler
-        self.n_samples = sampler.n_samples
+        self.mode = mode
+        self.indices = sampler.get_mode_indices(mode)
         self.reverse_complement_aug = reverse_complement_aug
 
     def __len__(self):
-        return self.n_samples
+        return len(self.indices)
 
     def __getitem__(self, idx):
-        # We ignore idx — the sampler maintains its own shuffle state.
-        # Instead, we draw 1 sample from the sampler.
-        batch = self.sampler.sample(batch_size=1)
-        seq = batch.sequences[0]   # (L, 4)
-        target = batch.targets[0]  # (C, L)
-        meta = batch.metadatas[0]
+        interval_idx = self.indices[idx]
+        chrom, start, end = self.sampler.sample_from_intervals[interval_idx]
+
+        result = self.sampler.retrieve(chrom, start, end)
+        if result is None:
+            raise RuntimeError(
+                f"Failed to retrieve interval {interval_idx}: "
+                f"{chrom}:{start}-{end} in mode={self.mode}"
+            )
+
+        seq, target = result  # (L, 4), (C, L)
 
         if self.reverse_complement_aug and random.random() < 0.5:
             seq, target = _reverse_complement(seq, target)
@@ -34,6 +42,9 @@ class Seq2SeqDataset(Dataset):
         # Transpose seq from (L, 4) → (4, L) for Conv1d
         seq = torch.from_numpy(seq).float().permute(1, 0)
         target = torch.from_numpy(target).float()
+
+        from mural_s2s.data.sampler import Metadata
+        meta = Metadata(chrom, start, end)
         return seq, target, meta
 
 
@@ -55,10 +66,11 @@ def worker_init_fn(worker_id, seed=436):
     random.seed(seed + worker_id + 1)
 
 
-def build_dataloader(sampler, batch_size, num_workers=1, seed=436,
+def build_dataloader(sampler, batch_size, mode, num_workers=1, seed=436,
                      reverse_complement_aug=False, shuffle=False):
-    """Build a finite PyTorch DataLoader from an IntervalsSampler."""
-    dataset = Seq2SeqDataset(sampler, reverse_complement_aug=reverse_complement_aug)
+    """Build a finite PyTorch DataLoader for a given data split mode."""
+    dataset = Seq2SeqDataset(sampler, mode=mode,
+                             reverse_complement_aug=reverse_complement_aug)
 
     dataloader = DataLoader(
         dataset,

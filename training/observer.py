@@ -55,7 +55,7 @@ class LossMinor(Observer):
         mode = kwargs.get('mode')
 
         if loss is not None:
-            self.loss += loss
+            self.loss += loss * sample_number
             self.sample_number += sample_number
 
             self._loss_window.append(loss)

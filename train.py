@@ -61,7 +61,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=436)
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--reverse-complement-aug", action="store_true", default=False)
-    p.add_argument("--no-use_reverse", action="store_false", default=True)
+    p.add_argument("--disable-reverse", action="store_false", dest="use_reverse",
+                   default=True, help="Disable reverse-complement module in model")
     p.add_argument("--progress-every", type=int, default=100,
                    help="Print progress every N batches")
 
@@ -82,9 +83,9 @@ def _print_config_summary(config, device, sampler):
     target_features = config.target_features + ["mask"]
     target_bw_paths = config.target_bw_paths + [config.mask_bw]
 
-    train_n = len(sampler._sample_from_mode["train"].indices)
-    val_n = len(sampler._sample_from_mode["validate"].indices)
-    test_n = len(sampler._sample_from_mode["test"].indices) \
+    train_n = len(sampler.get_mode_indices("train"))
+    val_n = len(sampler.get_mode_indices("validate"))
+    test_n = len(sampler.get_mode_indices("test")) \
         if "test" in sampler.modes else 0
 
     train_batches = math.ceil(train_n / config.batch_size)
@@ -184,6 +185,7 @@ def main():
         seed=args.seed,
         num_workers=args.num_workers,
         reverse_complement_aug=args.reverse_complement_aug,
+        use_reverse=args.use_reverse,
         output_dir=args.output_dir,
         progress_every_n_batches=args.progress_every,
     )
@@ -212,7 +214,7 @@ def main():
         seed=config.seed,
     )
 
-    config.train_size = len(sampler._sample_from_mode["train"].indices)
+    config.train_size = len(sampler.get_mode_indices("train"))
 
     # --- Print config & init log ---
     train_n, val_n, test_n, train_batches, val_batches, test_batches, gamma_step = \
@@ -223,7 +225,7 @@ def main():
 
     # --- Model ---
     n_output_channels = len(config.target_features)
-    model = PuffinD(n_output_channels=n_output_channels, use_reverse=args.no_use_reverse).to(device)
+    model = PuffinD(n_output_channels=n_output_channels, use_reverse=args.use_reverse).to(device)
     print(f"\nModel parameters: {count_parameters(model):,}")
 
     # --- Trainer ---
@@ -248,11 +250,11 @@ def main():
         print(f"{'='*70}")
 
         # --- Train ---
-        sampler.mode = "train"
         train_loader = build_dataloader(
-            sampler, config.batch_size,
+            sampler, config.batch_size, mode="train",
             num_workers=config.num_workers, seed=config.seed,
             reverse_complement_aug=config.reverse_complement_aug,
+            shuffle=True,
         )
         model.train()
         t0 = time.time()
@@ -282,10 +284,10 @@ def main():
         print(f"Checkpoint saved to {save_path}")
 
         # --- Validate ---
-        sampler.mode = "validate"
         val_loader = build_dataloader(
-            sampler, config.batch_size,
+            sampler, config.batch_size, mode="validate",
             num_workers=config.num_workers, seed=config.seed,
+            shuffle=False,
         )
         model.eval()
 

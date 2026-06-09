@@ -53,7 +53,8 @@ class Trainer:
         target_values = target_values * mask
 
         from mural_s2s.loss import Poisson_PseudoKL
-        loss = Poisson_PseudoKL(preds, target_values, total_weight=self.total_weight)
+        loss = Poisson_PseudoKL(preds, target_values, total_weight=self.total_weight,
+                                mask=mask)
 
         if not torch.isfinite(loss):
             self.printer("WARNING: non-finite loss, ending training", file=sys.stderr)
@@ -104,7 +105,8 @@ class Trainer:
             target_masked = target_values * mask
 
             from mural_s2s.loss import Poisson_PseudoKL
-            loss = Poisson_PseudoKL(preds_masked, target_masked, total_weight=self.total_weight)
+            loss = Poisson_PseudoKL(preds_masked, target_masked, total_weight=self.total_weight,
+                                    mask=mask)
             loss_val = loss.item()
 
             for obs in self.observers:

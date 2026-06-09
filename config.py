@@ -55,6 +55,9 @@ class TrainingConfig:
     # --- Augmentation ---
     reverse_complement_aug: bool = False
 
+    # --- Model ---
+    use_reverse: bool = True
+
     # --- Derived / runtime ---
     train_size: int = 0  # set by training script after sampler init
     num_workers: int = 0
