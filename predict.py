@@ -55,6 +55,7 @@ def parse_args():
     p.add_argument("--sequence-length", type=int, default=10000)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--seed", type=int, default=436)
+    p.add_argument("--no-use_reverse", action="store_false", default=True)
     p.add_argument("--progress-every", type=int, default=100,
                    help="Print progress every N batches")
 
@@ -106,7 +107,7 @@ def main():
 
     # --- Model ---
     n_output_channels = len(config.target_features)
-    model = PuffinD(n_output_channels=n_output_channels)
+    model = PuffinD(n_output_channels=n_output_channels, use_reverse=args.no_use_reverse)
     state_dict = torch.load(args.model, map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
@@ -159,7 +160,7 @@ def main():
                     for pos in range(start, end):
                         p = pos - start
                         vals = '\t'.join(f'{preds[i, j, p]:.8f}' for j in range(4))
-                        lines.append(f'{chrom}\t{pos}\t{vals}\n')
+                        lines.append(f'{chrom}\t{pos+1}\t{vals}\n')
 
                 f.write(''.join(lines))
                 n_positions += len(lines)

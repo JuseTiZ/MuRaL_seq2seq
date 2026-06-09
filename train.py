@@ -61,6 +61,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=436)
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--reverse-complement-aug", action="store_true", default=False)
+    p.add_argument("--no-use_reverse", action="store_false", default=True)
     p.add_argument("--progress-every", type=int, default=100,
                    help="Print progress every N batches")
 
@@ -222,7 +223,7 @@ def main():
 
     # --- Model ---
     n_output_channels = len(config.target_features)
-    model = PuffinD(n_output_channels=n_output_channels).to(device)
+    model = PuffinD(n_output_channels=n_output_channels, use_reverse=args.no_use_reverse).to(device)
     print(f"\nModel parameters: {count_parameters(model):,}")
 
     # --- Trainer ---

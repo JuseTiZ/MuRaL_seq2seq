@@ -44,7 +44,7 @@ class PuffinD(nn.Module):
                 nn.BatchNorm1d(4),
             )
             self.register_buffer(
-                'collapse_map', torch.tensor([0, 0, 1, 1], dtype=torch.float)
+                'collapse_map', torch.tensor([0, 1, 1, 0], dtype=torch.float)
             )
             self.ref_embedding = nn.Embedding(
                 num_embeddings=2, embedding_dim=embedding_dim

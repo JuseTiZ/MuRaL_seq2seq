@@ -46,8 +46,11 @@ def reverse_complement_batch(sequence, target):
     Reverse-complement a batch: flip (B, 4, L) sequence and (B, C, L) target.
 
     sequence: (B, 4, L) with channels [A, C, G, T]
-    Returns (B, 4, L) with channels [T, G, C, A] reversed along L axis.
+    target: (B, C, L) with channels [mut_to_A, mut_to_C, mut_to_G, mut_to_T, mask]
+    After reverse-complement, mut_to_A <-> mut_to_T and mut_to_C <-> mut_to_G.
     """
-    seq_rc = torch.flip(sequence, dims=[1, 2])  # reverse base order AND position
-    target_rc = torch.flip(target, dims=[2])    # reverse position only
+    seq_rc = torch.flip(sequence, dims=[1, 2])
+    target_rc = target.clone()
+    target_rc[:, :4] = torch.flip(target[:, :4], dims=[1, 2])  # swap A<->T, C<->G, and reverse pos
+    target_rc[:, 4:] = torch.flip(target[:, 4:], dims=[2])     # mask: position-reverse only
     return seq_rc, target_rc

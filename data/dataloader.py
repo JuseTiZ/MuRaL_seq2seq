@@ -38,10 +38,15 @@ class Seq2SeqDataset(Dataset):
 
 
 def _reverse_complement(seq, target):
-    """Reverse-complement a single (L, 4) sequence and its (C, L) target."""
-    # Reverse: flip order of [A,C,G,T] to [T,G,C,A]
+    """Reverse-complement a single (L, 4) sequence and its (C, L) target.
+
+    Target channels: [mut_to_A, mut_to_C, mut_to_G, mut_to_T, mask].
+    After reverse-complement, mut_to_A <-> mut_to_T and mut_to_C <-> mut_to_G.
+    """
     seq_rc = seq[::-1, ::-1].copy()
-    target_rc = target[:, ::-1].copy()
+    target_rc = target.copy()
+    target_rc[:4] = target[:4][::-1, ::-1]  # swap A<->T (0<->3), C<->G (1<->2), and reverse pos
+    target_rc[4] = target[4, ::-1]          # mask: position-reverse only
     return seq_rc, target_rc
 
 
