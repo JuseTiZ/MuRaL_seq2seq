@@ -5,3 +5,4 @@ __pycache__/
 output/
 checkpoint_*/
 *.pkl
+CODEX.md
