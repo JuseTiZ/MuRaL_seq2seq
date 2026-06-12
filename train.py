@@ -57,6 +57,8 @@ def parse_args():
     p.add_argument("--lr-gamma", type=float, default=0.1)
     p.add_argument("--grad-clip", type=float, default=10.0)
     p.add_argument("--total-weight", type=float, default=1.0)
+    p.add_argument("--emd-weight", type=float, default=0.01,
+                   help="Weight of the EMD auxiliary loss term (0 to disable)")
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--seed", type=int, default=436)
     p.add_argument("--num-workers", type=int, default=0)
@@ -129,7 +131,7 @@ def _print_config_summary(config, device, sampler):
     L(f"    Batch size:    {config.batch_size}")
     L(f"    Optimizer:     Adam (lr={config.learning_rate}, weight_decay={config.weight_decay})")
     L(f"    LR schedule:   StepLR per-batch (gamma={gamma_step:.6f}, min_lr={config.min_lr})")
-    L(f"    Loss:          Poisson_PseudoKL (total_weight={config.total_weight})")
+    L(f"    Loss:          {config.loss} (total_weight={config.total_weight}, emd_weight={config.emd_weight})")
     L(f"    Grad clip:     {config.gradient_clip_norm}")
     L(f"    Rev-comp aug:  {config.reverse_complement_aug}")
     L(f"    Patience:      {config.patience}")
@@ -153,7 +155,7 @@ def _write_log_header(log_path, config, device, train_n, val_n):
         f.write(f"# batch_size={config.batch_size} epochs={config.epochs}\n")
         f.write(f"# lr={config.learning_rate} min_lr={config.min_lr} lr_gamma={config.lr_gamma}\n")
         f.write(f"# weight_decay={config.weight_decay} grad_clip={config.gradient_clip_norm}\n")
-        f.write(f"# total_weight={config.total_weight} seed={config.seed}\n")
+        f.write(f"# total_weight={config.total_weight} emd_weight={config.emd_weight} seed={config.seed}\n")
         f.write(f"# use_reverse={config.use_reverse}\n")
         f.write(f"# rev_complement_aug={config.reverse_complement_aug}\n")
         f.write(f"# device={device}\n")
@@ -183,6 +185,7 @@ def main():
         lr_gamma=args.lr_gamma,
         gradient_clip_norm=args.grad_clip,
         total_weight=args.total_weight,
+        emd_weight=args.emd_weight,
         patience=args.patience,
         seed=args.seed,
         num_workers=args.num_workers,

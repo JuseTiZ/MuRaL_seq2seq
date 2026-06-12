@@ -28,6 +28,7 @@ class Trainer:
         print(f"LR gamma per step: {gamma_step:.6f}")
 
         self.total_weight = config.total_weight
+        self.emd_weight = config.emd_weight
         self.printer = print
 
     def train_step(self, sequence, target):
@@ -53,8 +54,9 @@ class Trainer:
         target_values = target_values * mask
 
         from mural_s2s.loss import Poisson_PseudoKL
-        loss = Poisson_PseudoKL(preds, target_values, total_weight=self.total_weight,
-                                mask=mask)
+        loss, components = Poisson_PseudoKL(
+            preds, target_values, total_weight=self.total_weight,
+            mask=mask, emd_weight=self.emd_weight, return_components=True)
 
         if not torch.isfinite(loss):
             self.printer("WARNING: non-finite loss, ending training", file=sys.stderr)
@@ -82,6 +84,7 @@ class Trainer:
             obs.update(
                 model=self.model,
                 loss=loss_val,
+                loss_tasks=[components['poisson_kl'], components['emd']],
                 sample_number=sequence.size(0),
                 train_time=train_time,
                 mode="train",
@@ -105,13 +108,15 @@ class Trainer:
             target_masked = target_values * mask
 
             from mural_s2s.loss import Poisson_PseudoKL
-            loss = Poisson_PseudoKL(preds_masked, target_masked, total_weight=self.total_weight,
-                                    mask=mask)
+            loss, components = Poisson_PseudoKL(
+                preds_masked, target_masked, total_weight=self.total_weight,
+                mask=mask, emd_weight=self.emd_weight, return_components=True)
             loss_val = loss.item()
 
             for obs in self.observers:
                 obs.update(
                     loss=loss_val,
+                    loss_tasks=[components['poisson_kl'], components['emd']],
                     sample_number=sequence.size(0),
                     mode="validate",
                 )
