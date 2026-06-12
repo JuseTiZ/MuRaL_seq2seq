@@ -53,10 +53,13 @@ class Trainer:
         preds = preds * mask
         target_values = target_values * mask
 
+        emd_mask = mask * _get_no_mut_mask(sequence, target_values)
+
         from mural_s2s.loss import Poisson_PseudoKL
         loss, components = Poisson_PseudoKL(
             preds, target_values, total_weight=self.total_weight,
-            mask=mask, emd_weight=self.emd_weight, return_components=True)
+            mask=mask, emd_weight=self.emd_weight, emd_mask=emd_mask,
+            return_components=True)
 
         if not torch.isfinite(loss):
             self.printer("WARNING: non-finite loss, ending training", file=sys.stderr)
@@ -84,7 +87,8 @@ class Trainer:
             obs.update(
                 model=self.model,
                 loss=loss_val,
-                loss_tasks=[components['poisson_kl'], components['emd']],
+                loss_tasks=[components['poisson_kl'], components['emd_raw'],
+                            components['emd_weighted']],
                 sample_number=sequence.size(0),
                 train_time=train_time,
                 mode="train",
@@ -107,16 +111,20 @@ class Trainer:
             preds_masked = preds * mask
             target_masked = target_values * mask
 
+            emd_mask = mask * _get_no_mut_mask(sequence, target_masked)
+
             from mural_s2s.loss import Poisson_PseudoKL
             loss, components = Poisson_PseudoKL(
                 preds_masked, target_masked, total_weight=self.total_weight,
-                mask=mask, emd_weight=self.emd_weight, return_components=True)
+                mask=mask, emd_weight=self.emd_weight, emd_mask=emd_mask,
+                return_components=True)
             loss_val = loss.item()
 
             for obs in self.observers:
                 obs.update(
                     loss=loss_val,
-                    loss_tasks=[components['poisson_kl'], components['emd']],
+                    loss_tasks=[components['poisson_kl'], components['emd_raw'],
+                                components['emd_weighted']],
                     sample_number=sequence.size(0),
                     mode="validate",
                 )
@@ -155,3 +163,23 @@ def _mask_no_mut(sequence, targets):
         base_idx = ch % 4
         keep_mask[:, ch, :] = (sequence[:, base_idx, :] != 1).float().to(targets.dtype)
     return targets * keep_mask
+
+
+def _get_no_mut_mask(sequence, targets):
+    """
+    Return a boolean mask where True = real mutation position (not self-mutation).
+
+    Args:
+        sequence: (B, 4, L) one-hot DNA
+        targets:  (B, C_out, L) label values (for shape reference)
+
+    Returns:
+        (B, C_out, L) float tensor, 1.0 at valid mutation positions, 0.0 at
+        self-mutation positions (A→A, C→C, G→G, T→T).
+    """
+    B, C, L = targets.shape
+    keep_mask = torch.ones(B, C, L, device=targets.device, dtype=targets.dtype)
+    for ch in range(C):
+        base_idx = ch % 4
+        keep_mask[:, ch, :] = (sequence[:, base_idx, :] != 1).float().to(targets.dtype)
+    return keep_mask
