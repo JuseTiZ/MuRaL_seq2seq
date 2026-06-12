@@ -47,7 +47,8 @@ class TrainingConfig:
 
     # --- Loss ---
     total_weight: float = 1.0
-    loss: str = "poisson_total_kl"
+    loss: str = "poisson_total_kl_emd"
+    emd_weight: float = 0.01
 
     # --- Early stopping ---
     patience: int = 5
