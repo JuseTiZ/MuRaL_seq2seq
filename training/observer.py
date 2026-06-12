@@ -67,7 +67,7 @@ class LossMinor(Observer):
         if loss_tasks is not None:
             if self.loss_tasks is None:
                 self.loss_tasks = np.zeros_like(loss_tasks)
-            self.loss_tasks += loss_tasks
+            self.loss_tasks += np.asarray(loss_tasks) * sample_number
 
         if train_time is not None:
             self.train_time += train_time

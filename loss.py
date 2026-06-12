@@ -14,7 +14,7 @@ def PseudoPoissonKL(y_pred, y_true, epsilon: float = 1e-10):
     return y_true * torch.log((y_true + epsilon) / (y_pred + epsilon)) + y_pred - y_true
 
 
-def emd_loss_1d(y_pred, y_true, mask=None):
+def emd_loss_1d(y_pred, y_true, mask=None, emd_mask=None):
     """
     Per-channel Earth Mover's Distance on CDFs.
 
@@ -22,9 +22,11 @@ def emd_loss_1d(y_pred, y_true, mask=None):
     sum=1, computes CDFs via cumsum, and takes L1 distance.
 
     Args:
-        y_pred: (B, C, L) predicted rates (already masked)
-        y_true: (B, C, L) target rates (already masked)
-        mask:   (B, 1, L) or (B, C, L) coverage mask
+        y_pred:   (B, C, L) predicted rates (already masked)
+        y_true:   (B, C, L) target rates (already masked)
+        mask:     (B, 1, L) or (B, C, L) coverage mask (used as fallback)
+        emd_mask: (B, C, L) mask for EMD — excludes self-mutation positions
+                  in addition to coverage. If None, falls back to mask.
 
     Returns:
         scalar — mean EMD over batch and channels
@@ -35,7 +37,9 @@ def emd_loss_1d(y_pred, y_true, mask=None):
 
     for b in range(B):
         for c in range(C):
-            if mask is not None:
+            if emd_mask is not None:
+                m = emd_mask[b, c, :] > 0
+            elif mask is not None:
                 if mask.dim() == 3 and mask.shape[1] == 1:
                     m = mask[b, 0, :] > 0
                 else:
@@ -47,6 +51,8 @@ def emd_loss_1d(y_pred, y_true, mask=None):
             t = y_true[b, c, :][m]
 
             if p.numel() < 2:
+                continue
+            if t.sum() < 1e-8:
                 continue
 
             p_norm = p / (p.sum() + 1e-8)
@@ -64,16 +70,19 @@ def emd_loss_1d(y_pred, y_true, mask=None):
 
 
 def Poisson_PseudoKL(y_pred, y_true, total_weight: float = 1.0, mask=None,
-                     emd_weight: float = 0.01, return_components: bool = False):
+                     emd_weight: float = 0.01, emd_mask=None,
+                     return_components: bool = False):
     """
     Combined Poisson + Pseudo-KL + EMD loss.
 
     Args:
-        y_pred: (B, C, L) — predicted mutation rates
-        y_true: (B, C, L) — target mutation rates
+        y_pred:     (B, C, L) — predicted mutation rates
+        y_true:     (B, C, L) — target mutation rates
         total_weight: weight of the Poisson term relative to KL
-        mask: (B, 1, L) or (B, C, L) — per-position mask
+        mask:       (B, 1, L) or (B, C, L) — per-position coverage mask
         emd_weight: weight of the EMD auxiliary term (set to 0 to disable)
+        emd_mask:   (B, C, L) — mask for EMD term (excludes self-mutation
+                    positions). If None, EMD falls back to mask.
         return_components: if True, also return a dict with individual loss terms
 
     Returns:
@@ -93,12 +102,16 @@ def Poisson_PseudoKL(y_pred, y_true, total_weight: float = 1.0, mask=None,
     poisson_kl = loss_raw.mean()
 
     if emd_weight > 0:
-        emd_val = emd_loss_1d(y_pred, y_true, mask)
-        loss = poisson_kl + emd_weight * emd_val
+        emd_raw = emd_loss_1d(y_pred, y_true, mask, emd_mask=emd_mask)
+        loss = poisson_kl + emd_weight * emd_raw
     else:
-        emd_val = torch.tensor(0.0, device=y_pred.device)
+        emd_raw = torch.tensor(0.0, device=y_pred.device)
         loss = poisson_kl
 
     if return_components:
-        return loss, {'poisson_kl': poisson_kl.item(), 'emd': (loss - poisson_kl).item()}
+        return loss, {
+            'poisson_kl': poisson_kl.item(),
+            'emd_raw': emd_raw.item(),
+            'emd_weighted': (emd_weight * emd_raw).item(),
+        }
     return loss
