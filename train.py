@@ -30,7 +30,7 @@ from mural_s2s.data.targets import GenomicSignalFeatures
 from mural_s2s.data.sampler import IntervalsSampler
 from mural_s2s.data.dataloader import build_dataloader
 from mural_s2s.model import PuffinD, count_parameters
-from mural_s2s.training.trainer import Trainer
+from mural_s2s.training.trainer import Trainer, _mask_no_mut
 from mural_s2s.training.observer import LossMinor, GradMinor
 from mural_s2s.evaluation.metrics import calc_regional_correlation_grouped
 from mural_s2s.utils.helpers import EarlyStopping, save_model
@@ -301,7 +301,7 @@ def main():
         for batch_idx, (sequence, target, _) in enumerate(val_loader):
             pred = trainer.valid_step(sequence, target)
             mask = target[:, -1, :]
-            target_values = target[:, :-1, :]
+            target_values = _mask_no_mut(sequence, target[:, :-1, :])
 
             pred_masked = pred.cpu() * mask.unsqueeze(1)
             target_masked = target_values.cpu() * mask.unsqueeze(1)
