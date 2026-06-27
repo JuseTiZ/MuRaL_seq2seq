@@ -20,9 +20,11 @@ import os
 import pickle
 import sys
 import time
+from collections import namedtuple
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader, Dataset
 
 # Allow running this script directly from anywhere without installing mural_s2s
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,6 +35,67 @@ from mural_s2s.data.targets import GenomicSignalFeatures
 from mural_s2s.data.sampler import IntervalsSampler
 from mural_s2s.data.dataloader import build_dataloader
 from mural_s2s.model import PuffinD
+
+
+CropMetadata = namedtuple(
+    "CropMetadata", ["chrom", "output_start", "output_end", "crop_start"]
+)
+
+
+class CenterCropPredictionDataset(Dataset):
+    """Build fixed-length inference windows around smaller output tiles."""
+
+    def __init__(self, sampler, mode, sequence_length, output_length):
+        self.genome = sampler.reference_sequence
+        self.sequence_length = sequence_length
+        self.windows = []
+
+        for interval_idx in sampler.get_mode_indices(mode):
+            chrom, interval_start, interval_end = sampler.sample_from_intervals[
+                interval_idx
+            ]
+            interval_length = interval_end - interval_start
+            if interval_length != sequence_length:
+                raise ValueError(
+                    f"BED interval {chrom}:{interval_start}-{interval_end} has length "
+                    f"{interval_length}, expected --sequence-length {sequence_length}"
+                )
+
+            for output_start in range(interval_start, interval_end, output_length):
+                output_end = min(output_start + output_length, interval_end)
+                tile_length = output_end - output_start
+                total_flank = sequence_length - tile_length
+                left_flank = total_flank // 2
+                right_flank = total_flank - left_flank
+                input_start = output_start - left_flank
+                input_end = output_end + right_flank
+                self.windows.append(
+                    (
+                        chrom,
+                        input_start,
+                        input_end,
+                        CropMetadata(chrom, output_start, output_end, left_flank),
+                    )
+                )
+
+    def __len__(self):
+        return len(self.windows)
+
+    def __getitem__(self, idx):
+        chrom, input_start, input_end, meta = self.windows[idx]
+        seq = self.genome.get_encoding_from_coords(
+            chrom, input_start, input_end, pad=True
+        )
+        if seq.shape[0] != self.sequence_length:
+            raise RuntimeError(
+                f"Failed to retrieve inference window "
+                f"{chrom}:{input_start}-{input_end}"
+            )
+        return torch.from_numpy(seq).float().permute(1, 0), meta
+
+
+def _collate_center_crop(batch):
+    return torch.stack([item[0] for item in batch]), [item[1] for item in batch]
 
 
 def _format_time(seconds):
@@ -54,8 +117,18 @@ def parse_args():
     p.add_argument("--val-chroms", nargs="+", default=["chr1"])
     p.add_argument("--test-chroms", nargs="+", default=["chr2"])
     p.add_argument("--sequence-length", type=int, default=10000)
+    p.add_argument(
+        "--center-output-length",
+        type=int,
+        default=None,
+        help=(
+            "Only write the center N bases from each inference window and tile "
+            "them across every BED interval (default: disabled)"
+        ),
+    )
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--seed", type=int, default=436)
+    p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--disable-reverse", action="store_false", dest="use_reverse",
                    default=True, help="Disable reverse-complement module in model")
     p.add_argument("--progress-every", type=int, default=100,
@@ -71,6 +144,18 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    if args.center_output_length is not None:
+        if not 0 < args.center_output_length <= args.sequence_length:
+            raise ValueError(
+                "--center-output-length must be greater than zero and no larger "
+                "than --sequence-length"
+            )
+        if (args.sequence_length - args.center_output_length) % 2 != 0:
+            raise ValueError(
+                "--sequence-length minus --center-output-length must be even so "
+                "the output tile has symmetric flanking context"
+            )
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
@@ -103,7 +188,40 @@ def main():
     )
 
     n_intervals = len(sampler.get_mode_indices(args.mode))
-    n_batches = math.ceil(n_intervals / config.batch_size)
+    n_expected_positions = sum(
+        sampler.sample_from_intervals[idx][2]
+        - sampler.sample_from_intervals[idx][1]
+        for idx in sampler.get_mode_indices(args.mode)
+    )
+
+    if args.center_output_length is None:
+        loader = build_dataloader(
+            sampler,
+            config.batch_size,
+            mode=args.mode,
+            num_workers=args.num_workers,
+            seed=config.seed,
+            shuffle=False,
+        )
+        n_inference_windows = n_intervals
+    else:
+        dataset = CenterCropPredictionDataset(
+            sampler,
+            args.mode,
+            config.sequence_length,
+            args.center_output_length,
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            collate_fn=_collate_center_crop,
+        )
+        n_inference_windows = len(dataset)
+
+    n_batches = math.ceil(n_inference_windows / config.batch_size)
 
     # --- Model ---
     # Try to auto-detect use_reverse from checkpoint config
@@ -134,15 +252,22 @@ def main():
     print(f"  Intervals:  {config.intervals}")
     print(f"  Mode:        {args.mode}")
     print(f"  Seq length:  {config.sequence_length}")
+    if args.center_output_length is None:
+        print("  Inference:   full-window output")
+    else:
+        flank = (config.sequence_length - args.center_output_length) // 2
+        print("  Inference:   center-cropped tiled output")
+        print(f"  Center size: {args.center_output_length}")
+        print(f"  Min flank:   {flank} per side")
     print(f"  Batch size:  {config.batch_size}")
     print(f"  Intervals:   {n_intervals:,}")
+    print(f"  Windows:     {n_inference_windows:,}")
     print(f"  Batches:     {n_batches:,}")
+    print(f"  Positions:   {n_expected_positions:,}")
     print(f"  Output:      {args.output}")
     print("=" * 70)
 
     # --- Predict ---
-    loader = build_dataloader(sampler, config.batch_size, mode=args.mode,
-                              num_workers=0, seed=config.seed, shuffle=False)
     progress_n = args.progress_every
 
     bases = ['A', 'C', 'G', 'T']
@@ -157,7 +282,11 @@ def main():
         f.write(header_line)
 
         with torch.no_grad():
-            for batch_idx, (sequence, target, metadatas) in enumerate(loader):
+            for batch_idx, batch in enumerate(loader):
+                if args.center_output_length is None:
+                    sequence, _, metadatas = batch
+                else:
+                    sequence, metadatas = batch
                 sequence = sequence.to(device)
                 preds = model(sequence)  # (B, 4, L)
 
@@ -168,10 +297,19 @@ def main():
 
                 lines = []
                 for i, meta in enumerate(metadatas):
-                    chrom = meta.chroms
-                    start = int(meta.bin_starts)
-                    for pos in range(start, start + preds.shape[2]):
-                        p = pos - start
+                    if args.center_output_length is None:
+                        chrom = meta.chroms
+                        output_start = int(meta.bin_starts)
+                        output_end = output_start + preds.shape[2]
+                        crop_start = 0
+                    else:
+                        chrom = meta.chrom
+                        output_start = int(meta.output_start)
+                        output_end = int(meta.output_end)
+                        crop_start = int(meta.crop_start)
+
+                    for pos in range(output_start, output_end):
+                        p = crop_start + pos - output_start
                         vals = '\t'.join(f'{preds[i, j, p]:.8f}' for j in range(4))
                         lines.append(f'{chrom}\t{pos}\t{pos+1}\t{vals}\n')
 
