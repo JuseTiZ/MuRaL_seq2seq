@@ -49,6 +49,14 @@ chrom, start, end, mut_rate_A, mut_rate_C, mut_rate_G, mut_rate_T
 - `start` is 0-based, `end = start + 1` (single-base intervals)
 - Self-mutation channels are hard-masked to 0 (A→A at A sites = 0, etc.)
 - Output is streamed via `gzip.open` (no temp file)
+- `--center-output-length N` enables context-aware tiled inference. Each BED
+  interval is divided into output tiles of at most `N` bases; every tile is
+  predicted from a fixed `--sequence-length` input centered on that tile, and
+  only the center is written. The minimum flank on each side is
+  `(sequence_length - center_output_length) / 2`.
+- Center-cropped inference preserves the original BED coordinates and emits
+  each position once. Without `--center-output-length`, full-window prediction
+  remains unchanged.
 
 ## Key data facts (critical — verified from actual BigWig inspection)
 
@@ -94,7 +102,7 @@ chrom, start, end, mut_rate_A, mut_rate_C, mut_rate_G, mut_rate_T
 ## File map
 
 ```
-mural_s2s/
+mural_s2s/             Root path (the directory name which project locates in)
 ├── config.py          TrainingConfig dataclass (includes use_reverse)
 ├── model.py           PuffinD(n_output_channels, use_reverse), ConvBlock, count_parameters
 ├── loss.py            poisson(), PseudoPoissonKL(), Poisson_PseudoKL() — mask-aware
@@ -115,7 +123,8 @@ mural_s2s/
 └── predict.py         CLI: --model --output --mode {train,validate,test}
                         gzip.open streaming output with chrom/start/end/mut_rate_* columns,
                         self-mutation hard mask, auto-detect use_reverse from checkpoint config,
-                        shuffle=False for genomic-order output,
+                        shuffle=False for genomic-order output, optional context-aware tiled
+                        inference via --center-output-length,
                         --progress-every N batches.
 ```
 
@@ -149,10 +158,18 @@ python mural_s2s/predict.py \
     --mask-bw /public5_data/home/songhui/s2m/genome.mask_coverage_15_45.bw \
     --model ./output/checkpoint_19/model \
     --output predictions_chr2.tsv.gz \
+    --sequence-length 10000 \
+    --center-output-length 5000 \
     --mode test
 ```
 
 Output: gzipped TSV in genomic-position order, columns: `chrom, start, end, mut_rate_A, mut_rate_C, mut_rate_G, mut_rate_T`.
+
+With the settings above, each 10 kb BED interval is covered by two predictions.
+Each prediction receives a 10 kb sequence, retains only its central 5 kb, and
+therefore provides at least 2.5 kb of context on each side of every retained
+tile. For a 100 kb-trained model, the analogous settings are
+`--sequence-length 100000 --center-output-length 50000`, giving 25 kb flanks.
 
 ## Data sources
 
