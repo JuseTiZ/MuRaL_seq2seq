@@ -194,15 +194,27 @@ class PuffinD(nn.Module):
         ])
 
         final_dim = 64 + embedding_dim
+
+        # Background rate MLP: log(bg_rate) → embedding
+        self.bg_mlp = nn.Sequential(
+            nn.Linear(4, 16),
+            nn.SiLU(),
+            nn.Linear(16, 16),
+            nn.SiLU(),
+        )
+
+        # Output head: sequence embedding + background embedding → logits δ
         self.final = nn.Sequential(
-            nn.Conv1d(final_dim, final_dim, kernel_size=1),
+            nn.Conv1d(final_dim + 16, final_dim, kernel_size=1),
             nn.BatchNorm1d(final_dim),
             nn.ReLU(inplace=True),
             nn.Conv1d(final_dim, n_output_channels, kernel_size=1),
-            nn.Softplus(),
         )
+        # Zero-init last conv so δ=0 → f=exp(0)=1 at initialization
+        nn.init.zeros_(self.final[-1].weight)
+        nn.init.zeros_(self.final[-1].bias)
 
-    def forward(self, x):
+    def forward(self, x, bg_rates):
         if self.use_reverse:
             ref_class_idx = torch.einsum('bcl,c->bl', x, self.collapse_map).long()
             ref_emb = self.ref_embedding(ref_class_idx).permute(0, 2, 1)
@@ -242,7 +254,18 @@ class PuffinD(nn.Module):
         if self.use_reverse:
             out = torch.cat([out, ref_emb], dim=1)
 
-        return self.final(out)
+        # Background embedding
+        bg_log = torch.log(bg_rates + 1e-10)
+        bg_emb = self.bg_mlp(bg_log)                         # (B, 16)
+        bg_emb = bg_emb.unsqueeze(-1).expand(-1, -1, out.shape[-1])  # (B, 16, L)
+
+        out = torch.cat([out, bg_emb], dim=1)  # (B, final_dim+16, L)
+        delta = self.final(out)                # (B, 4, L) — logits
+        f = torch.exp(delta)                   # (B, 4, L) — correction factor
+        y = bg_rates.unsqueeze(-1) * f         # (B, 4, L) — absolute rates
+        y = y * (1 - x)                        # hard-zero self-mutation positions
+
+        return y
 
 
 def count_parameters(model):

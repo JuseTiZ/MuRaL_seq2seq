@@ -35,6 +35,7 @@ from mural_s2s.data.targets import GenomicSignalFeatures
 from mural_s2s.data.sampler import IntervalsSampler
 from mural_s2s.data.dataloader import build_dataloader
 from mural_s2s.model import PuffinD
+from mural_s2s.utils.helpers import load_model
 
 
 CropMetadata = namedtuple(
@@ -47,6 +48,7 @@ class CenterCropPredictionDataset(Dataset):
 
     def __init__(self, sampler, mode, sequence_length, output_length):
         self.genome = sampler.reference_sequence
+        self.target_features = sampler.target
         self.sequence_length = sequence_length
         self.windows = []
 
@@ -91,11 +93,40 @@ class CenterCropPredictionDataset(Dataset):
                 f"Failed to retrieve inference window "
                 f"{chrom}:{input_start}-{input_end}"
             )
-        return torch.from_numpy(seq).float().permute(1, 0), meta
+        # Fetch target data for the full input window, with zero-padding at
+        # chromosome boundaries (mirrors the N-padding in sequence retrieval).
+        chr_len = self.genome.len_chroms.get(chrom, 0)
+        eff_start = max(input_start, 0)
+        eff_end = min(input_end, chr_len)
+
+        if eff_start < eff_end:
+            target = self.target_features.get_feature_data(
+                chrom, eff_start, eff_end)
+        else:
+            target = np.zeros(
+                (self.target_features.n_features, 0), dtype=np.float32)
+
+        left_pad = eff_start - input_start
+        right_pad = input_end - eff_end
+        if left_pad > 0 or right_pad > 0:
+            target = np.pad(target, ((0, 0), (left_pad, right_pad)),
+                            mode='constant', constant_values=0)
+
+        if target.shape[1] != self.sequence_length:
+            raise RuntimeError(
+                f"Failed to retrieve targets for window "
+                f"{chrom}:{input_start}-{input_end}"
+            )
+        return (torch.from_numpy(seq).float().permute(1, 0),
+                torch.from_numpy(target).float(),
+                meta)
 
 
 def _collate_center_crop(batch):
-    return torch.stack([item[0] for item in batch]), [item[1] for item in batch]
+    seqs = torch.stack([item[0] for item in batch])
+    targets = torch.stack([item[1] for item in batch])
+    metas = [item[2] for item in batch]
+    return seqs, targets, metas
 
 
 def _format_time(seconds):
@@ -235,8 +266,7 @@ def main():
 
     n_output_channels = len(config.target_features)
     model = PuffinD(n_output_channels=n_output_channels, use_reverse=use_reverse)
-    state_dict = torch.load(args.model, map_location=device)
-    model.load_state_dict(state_dict)
+    load_model(model, args.model)
     model.to(device)
     model.eval()
 
@@ -283,15 +313,21 @@ def main():
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(loader):
-                if args.center_output_length is None:
-                    sequence, _, metadatas = batch
-                else:
-                    sequence, metadatas = batch
+                sequence, target, metadatas = batch
                 sequence = sequence.to(device)
-                preds = model(sequence)  # (B, 4, L)
 
-                # Hard-mask self-mutation channels: A->A, C->C, G->G, T->T are not mutations
-                preds = preds * (1 - sequence)
+                # Compute per-channel window background rates
+                mask = target[:, -1, :].unsqueeze(1).to(device)
+                target_values = target[:, :-1, :].to(device)
+
+                from mural_s2s.training.trainer import _mask_no_mut
+                from mural_s2s.utils.helpers import compute_background_rates
+                target_values = _mask_no_mut(sequence, target_values)
+                bg_rates, _ = compute_background_rates(
+                    target_values, sequence, mask)
+
+                preds = model(sequence, bg_rates)  # (B, 4, L)
+                # Self-mutation positions already hard-zeroed in model forward
 
                 preds = preds.cpu().numpy()
 

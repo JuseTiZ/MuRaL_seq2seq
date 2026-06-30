@@ -56,7 +56,7 @@ def parse_args():
     p.add_argument("--weight-decay", type=float, default=1e-6)
     p.add_argument("--lr-gamma", type=float, default=0.1)
     p.add_argument("--grad-clip", type=float, default=10.0)
-    p.add_argument("--total-weight", type=float, default=1.0)
+    p.add_argument("--total-weight", type=float, default=0.0)
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--seed", type=int, default=436)
     p.add_argument("--num-workers", type=int, default=0)
@@ -296,10 +296,12 @@ def main():
         valid_preds = []
         valid_targets = []
         valid_seq_indices = []
+        valid_bg_rates = []
+        valid_n_valid = []
         t0_val = time.time()
 
         for batch_idx, (sequence, target, _) in enumerate(val_loader):
-            pred = trainer.valid_step(sequence, target)
+            pred, bg_rates, n_valid = trainer.valid_step(sequence, target)
             mask = target[:, -1, :]
             target_values = _mask_no_mut(sequence, target[:, :-1, :])
 
@@ -309,6 +311,8 @@ def main():
             valid_preds.append(pred_masked.numpy())
             valid_targets.append(target_masked.numpy())
             valid_seq_indices.append(sequence.argmax(dim=1).cpu().numpy())
+            valid_bg_rates.append(bg_rates.cpu().numpy())
+            valid_n_valid.append(n_valid.cpu().numpy())
 
             b = batch_idx + 1
             if b % progress_n == 0:
@@ -325,8 +329,16 @@ def main():
         pred_all = np.concatenate(valid_preds, axis=0)
         true_all = np.concatenate(valid_targets, axis=0)
         seq_all = np.concatenate(valid_seq_indices, axis=0)
+        bg_all = np.concatenate(valid_bg_rates, axis=0)       # (N_val, 4)
+        nv_all = np.concatenate(valid_n_valid, axis=0)         # (N_val, 4)
 
         corr_grouped = calc_regional_correlation_grouped(pred_all, true_all, seq_all)
+
+        # Per-sample, per-channel mean prediction over valid positions
+        pred_mean_all = pred_all.sum(axis=2) / np.maximum(nv_all, 1.0)
+
+        # Fold change: pred_mean / bg_rate (where bg_rate > 0)
+        fold_all = np.where(bg_all > 0, pred_mean_all / bg_all, np.nan)
 
         # --- Epoch summary ---
         base_labels = ['A', 'C', 'G', 'T']
@@ -356,6 +368,22 @@ def main():
             vals = "  ".join(f"{corr_grouped[nuc_idx, ch]:8.4f}"
                              for ch in range(len(ch_names)))
             print(f"  {nuc_label}  {vals}")
+
+        print("Background rate & fold change per channel:")
+        print(f"  {'Channel':<12s} {'bg_mean':>10s} {'pred_mean':>10s} "
+              f"{'fold p25':>8s} {'fold p50':>8s} {'fold p75':>8s}")
+        for ch, name in enumerate(ch_names):
+            bg_mean = bg_all[:, ch].mean()
+            pred_mean = pred_mean_all[:, ch].mean()
+            fc_ch = fold_all[:, ch]
+            fc_valid = fc_ch[~np.isnan(fc_ch)]
+            if len(fc_valid) > 0:
+                p25, p50, p75 = np.percentile(fc_valid, [25, 50, 75])
+                print(f"  {name:<12s} {bg_mean:10.2e} {pred_mean:10.2e} "
+                      f"{p25:8.4f} {p50:8.4f} {p75:8.4f}")
+            else:
+                print(f"  {name:<12s} {bg_mean:10.2e} {pred_mean:10.2e} "
+                      f"{'N/A':>8s} {'N/A':>8s} {'N/A':>8s}")
 
         # --- Write log ---
         log_cols = [str(epoch), f"{train_loss:.6f}", f"{val_loss:.8f}",

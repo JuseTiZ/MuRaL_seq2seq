@@ -41,13 +41,15 @@ class Trainer:
         target_values = target_values.to(self.device)
         mask = mask.to(self.device)
 
-        preds = self.model(sequence)
-
-        # Mask out no-mutation positions in target: e.g. at an A site,
-        # mut_to_A label is a ref-base indicator (1.0), not a real rate.
-        # Only zero the target (not preds) so the model learns to
-        # suppress predictions at matched-base positions via the loss.
+        # Zero self-mutation positions in targets BEFORE computing bg_rate,
+        # so the artificial 1.0 ref-base indicators don't inflate T_c.
         target_values = _mask_no_mut(sequence, target_values)
+
+        # Compute per-channel window background rates
+        from mural_s2s.utils.helpers import compute_background_rates
+        bg_rates, n_valid = compute_background_rates(target_values, sequence, mask)
+
+        preds = self.model(sequence, bg_rates)
 
         preds = preds * mask
         target_values = target_values * mask
@@ -55,6 +57,11 @@ class Trainer:
         from mural_s2s.loss import Poisson_PseudoKL
         loss = Poisson_PseudoKL(preds, target_values, total_weight=self.total_weight,
                                 mask=mask)
+
+        # Exclude N_c=0 channels from loss averaging
+        channel_valid = (n_valid > 0).float()  # (B, 4)
+        n_total = channel_valid.sum().clamp_min(1.0)
+        loss = loss * (sequence.size(0) * target_values.size(1)) / n_total
 
         if not torch.isfinite(loss):
             self.printer("WARNING: non-finite loss, ending training", file=sys.stderr)
@@ -97,9 +104,12 @@ class Trainer:
             target_values = target_values.to(self.device)
             mask = mask.to(self.device)
 
-            preds = self.model(sequence)
-
             target_values = _mask_no_mut(sequence, target_values)
+
+            from mural_s2s.utils.helpers import compute_background_rates
+            bg_rates, n_valid = compute_background_rates(target_values, sequence, mask)
+
+            preds = self.model(sequence, bg_rates)
 
             preds_masked = preds * mask
             target_masked = target_values * mask
@@ -107,6 +117,10 @@ class Trainer:
             from mural_s2s.loss import Poisson_PseudoKL
             loss = Poisson_PseudoKL(preds_masked, target_masked, total_weight=self.total_weight,
                                     mask=mask)
+
+            channel_valid = (n_valid > 0).float()
+            n_total = channel_valid.sum().clamp_min(1.0)
+            loss = loss * (sequence.size(0) * target_values.size(1)) / n_total
             loss_val = loss.item()
 
             for obs in self.observers:
@@ -116,7 +130,7 @@ class Trainer:
                     mode="validate",
                 )
 
-        return preds
+        return preds, bg_rates, n_valid
 
     def epoch_finish(self, mode):
         results = {}

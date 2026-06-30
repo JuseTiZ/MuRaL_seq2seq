@@ -46,7 +46,7 @@ class TrainingConfig:
     lr_gamma: float = 0.1  # raw gamma, auto-scaled to per-step
 
     # --- Loss ---
-    total_weight: float = 1.0
+    total_weight: float = 0.0
     loss: str = "poisson_total_kl"
 
     # --- Early stopping ---
